@@ -17,8 +17,8 @@ returns the generated text.
 import os
 import requests
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "https://stretch-lou-last-incentive.trycloudflare.com")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "120"))
 
 

@@ -2404,30 +2404,6 @@ function App() {
                       </div>
                     )}
 
-                    {(mode === 'series' || (mode === 'new' && (uploadFile2 || useDummyServer))) && (
-                      <label>
-                        Key column
-                        <div className="upload-row">
-                          {columnsLoading ? (
-                            <span className="muted" style={{ fontSize: '0.85rem' }}>Reading columns…</span>
-                          ) : uploadColumns.length > 0 ? (
-                            <select
-                              className="search-input"
-                              value={uploadKeyCol}
-                              onChange={(e) => setUploadKeyCol(e.target.value)}
-                              style={{ flex: 1 }}
-                            >
-                              <option value="">— auto-detect —</option>
-                              {uploadColumns.map((col) => (
-                                <option key={col} value={col}>{col}</option>
-                              ))}
-                            </select>
-                          ) : (
-                            <input className="search-input" placeholder="e.g. transaction_id or Project Name" value={uploadKeyCol} onChange={(e) => setUploadKeyCol(e.target.value)} style={{ flex: 1 }} />
-                          )}
-                        </div>
-                      </label>
-                    )}
                   </div>
 
                   <aside className="action-frame">
@@ -2867,6 +2843,12 @@ function App() {
               </div>
             </section>
           )}
+
+          {activeView === 'admin' && isAdmin && (
+            <section className="content-card result-section">
+              <AdminPanel token={token} />
+            </section>
+          )}
         </div>
       </main>
 
@@ -3232,12 +3214,6 @@ function App() {
           </div>
         </div>
       )}
-
-          {activeView === 'admin' && isAdmin && (
-            <section className="content-card result-section">
-              <AdminPanel token={token} />
-            </section>
-          )}
 
       <SchemaMappingModal
         isOpen={showSchemaModal}

@@ -62,6 +62,31 @@ def update_user(user_id):
     return jsonify({"user": updated}), 200
 
 
+@admin_bp.route("/users/<int:user_id>", methods=["DELETE"])
+@admin_required
+def delete_user_route(user_id):
+    """Admin user management: permanently delete a user account.
+
+    The built-in admin@gmail.com account can never be deleted, and an
+    admin can't delete their own account while logged in as it (avoids
+    locking yourself out). Deleting a user cascades to their sessions
+    (ON DELETE CASCADE on sessions.user_id) automatically; any series/
+    datasets they owned are orphaned (user_id set to NULL), not deleted.
+    """
+    user = user_repository.get_user_by_id(user_id)
+    if user is None:
+        return jsonify({"error": "User not found."}), 404
+    if user["email"] == "admin@gmail.com":
+        return jsonify({"error": "The built-in admin account cannot be deleted."}), 400
+    if g.current_user_id is not None and g.current_user_id == user_id:
+        return jsonify({"error": "You cannot delete your own account while logged in."}), 400
+
+    deleted = user_repository.delete_user(user_id)
+    if not deleted:
+        return jsonify({"error": "User not found."}), 404
+    return jsonify({"deleted": True, "id": user_id}), 200
+
+
 @admin_bp.route("/sessions", methods=["GET"])
 @admin_required
 def list_all_sessions():

@@ -16,37 +16,6 @@ services:
       timeout: 5s
       retries: 10
 
-  ollama:
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_models:/root/.ollama
-    healthcheck:
-      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-
-  # One-off job: pulls the llama3 model into the shared ollama_models
-  # volume automatically on `docker compose up`, so you never need to run
-  # `docker compose exec ollama ollama pull llama3` by hand. It waits for
-  # the ollama service to be healthy, pulls the model (skips the download
-  # if it's already present in the volume from a previous run), then
-  # exits. backend waits on this completing before it starts.
-  ollama_pull:
-    image: ollama/ollama:latest
-    restart: "no"
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      - OLLAMA_HOST=ollama:11434
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - "ollama pull llama3"
-
   backend:
     build:
       context: ./backend
@@ -58,8 +27,14 @@ services:
     environment:
       - FLASK_ENV=development
       - DATABASE_URL=postgresql://consistency:consistency@db:5432/consistency
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=llama3
+      # Points at your external Ollama server, exposed via a Cloudflare
+      # Tunnel (trycloudflare.com). Reachable from inside Docker since
+      # it's a public HTTPS URL rather than a Docker service name.
+      # Note: trycloudflare.com quick tunnel URLs are ephemeral — they
+      # change every time the tunnel is restarted, so update this value
+      # whenever that happens.
+      - OLLAMA_BASE_URL=https://stretch-lou-last-incentive.trycloudflare.com
+      - OLLAMA_MODEL=llama3.2:3b
       # Groq is the PRIMARY AI provider for the chat assistant; Ollama
       # (above) is the automatic fallback when Groq can't answer. Set
       # GROQ_API_KEY in the root .env file — get a free key at
@@ -76,10 +51,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
-      ollama_pull:
-        condition: service_completed_successfully
 
   # Dockerized Target_Data database — replaces the old setup where
   # dummy_server reached out to Postgres running on the host machine (via
@@ -158,4 +129,3 @@ services:
 volumes:
   pgdata:
   target_pgdata:
-  ollama_models:
