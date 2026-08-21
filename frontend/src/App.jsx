@@ -182,6 +182,12 @@ function App() {
   const [uploadColumns, setUploadColumns] = useState([]);   // columns from the uploaded file
   const [uploadTargetColumns, setUploadTargetColumns] = useState([]);
   const [columnsLoading, setColumnsLoading] = useState(false);
+
+  // ── Transaction Column Calculator ──────────────────────────────────────────
+  const [calcSourceCol, setCalcSourceCol] = useState('');
+  const [calcTargetCol, setCalcTargetCol] = useState('');
+  const [calcResults, setCalcResults] = useState(null);   // { sumSource, sumTarget, difference }
+  const [calcLoading, setCalcLoading] = useState(false);
   const [useDummyServer, setUseDummyServer] = useState(false);
   // Which target dataset to fetch (cjbs / etairos / airetech / ats -- see
   // backend/dummy_server/target_registry.py). Populated from
@@ -439,6 +445,47 @@ function App() {
     }
   };
 
+  // ── Reads the uploaded file and computes column sums for the calculator ────
+  const parseFileRows = (file) => new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = e.target.result || '';
+        const lines = text.split(/\r\n|\n/).filter(Boolean);
+        if (lines.length < 2) { resolve([]); return; }
+        const headers = lines[0].split(/,|\t/).map((h) => h.replace(/^"|"$/g, '').trim());
+        const rows = lines.slice(1).map((line) => {
+          const vals = line.split(/,|\t/).map((v) => v.replace(/^"|"$/g, '').trim());
+          const obj = {};
+          headers.forEach((h, i) => { obj[h] = vals[i] ?? ''; });
+          return obj;
+        });
+        resolve(rows);
+      } catch { resolve([]); }
+    };
+    reader.readAsText(file);
+  });
+
+  const calculateColumnSums = async (overrideSrc, overrideTgt) => {
+    if (!uploadFile) { showToast('Please upload a file first.'); return; }
+    const srcCol = overrideSrc !== undefined ? overrideSrc : calcSourceCol;
+    const tgtCol = overrideTgt !== undefined ? overrideTgt : calcTargetCol;
+    if (!srcCol && !tgtCol) { showToast('Please select at least one column.'); return; }
+    setCalcLoading(true);
+    try {
+      const rows = await parseFileRows(uploadFile);
+      const toNum = (v) => { const n = parseFloat(String(v).replace(/[^0-9.-]/g, '')); return Number.isFinite(n) ? n : 0; };
+      const sumSource = srcCol ? rows.reduce((acc, r) => acc + toNum(r[srcCol]), 0) : null;
+      const sumTarget = tgtCol ? rows.reduce((acc, r) => acc + toNum(r[tgtCol]), 0) : null;
+      const difference = sumSource !== null && sumTarget !== null ? sumSource - sumTarget : null;
+      setCalcResults({ sumSource, sumTarget, difference, rowCount: rows.length });
+    } catch (err) {
+      showToast('Could not calculate — please make sure the file is a valid CSV.');
+    } finally {
+      setCalcLoading(false);
+    }
+  };
+
   const parseFileHeaders = async (file) => {
     if (!file) return [];
     try {
@@ -469,56 +516,85 @@ function App() {
     });
   };
 
+  const getPreviousVersionColumns = () => {
+    if (!selectedReport?.report) return [];
+    const report = selectedReport.report;
+    const sample = (report.full_comparison?.rows || [])[0] ||
+                   (report.mismatches?.rows || [])[0] ||
+                   (report.missing_in_target?.rows || [])[0] ||
+                   (report.only_source_rows || [])[0] ||
+                   (report.matched_rows || [])[0];
+    if (sample) {
+      const srcObj = sample.source_row || sample;
+      return Object.keys(srcObj).filter((c) => c !== '_reconciliation_key' && !c.endsWith('_Source') && !c.endsWith('_Target'));
+    }
+    return [];
+  };
+
   const triggerSchemaModal = async (actionType) => {
     if (!uploadFile) {
-      showToast('Please select a Source file first.');
+      showToast('Please select a file first.');
       return;
     }
     setPendingActionType(actionType);
 
-    let srcCols = uploadColumns.length ? uploadColumns : [];
-    if (!srcCols.length) srcCols = await parseFileHeaders(uploadFile);
-    setSchemaSourceCols(srcCols);
-
+    let srcCols = [];
     let tgtCols = [];
-    if (!useDummyServer && uploadFile2) {
-      tgtCols = await parseFileHeaders(uploadFile2);
-    } else if (useDummyServer || actionType === 'new_dummy') {
-      try {
-        const proj = targetProject || 'cjbs';
-        const res = await axios.get(`${API_BASE}/api/dummy-integration/target-schema?project_name=${proj}`, {
-          headers: authHeaders(token),
-        });
-        tgtCols = res.data?.columns || [];
-      } catch (err) {
-        // Dummy Server target-schema call failed — do NOT fall back to
-        // uploadTargetColumns here, since that state can hold columns from
-        // an unrelated manually-uploaded Target file or a different
-        // project's schema (that's what previously produced a Target
-        // dropdown full of columns that had nothing to do with this
-        // project, e.g. PARTY_NAME for a CJBS project reconciliation).
-        tgtCols = srcCols;
-        showToast('Could not load the Target schema from the Dummy Server — showing Source columns instead. Check that the Dummy Server is running.');
-      }
-    } else if (uploadTargetColumns.length) {
-      tgtCols = uploadTargetColumns;
+
+    if (actionType === 'add_version' || mode === 'series') {
+      const prevCols = getPreviousVersionColumns();
+      srcCols = prevCols.length ? prevCols : (uploadColumns.length ? uploadColumns : await parseFileHeaders(uploadFile));
+      tgtCols = uploadColumns.length ? uploadColumns : await parseFileHeaders(uploadFile);
     } else {
-      tgtCols = srcCols;
+      srcCols = uploadColumns.length ? uploadColumns : await parseFileHeaders(uploadFile);
+      if (!useDummyServer && uploadFile2) {
+        tgtCols = uploadTargetColumns.length ? uploadTargetColumns : await parseFileHeaders(uploadFile2);
+      } else if (useDummyServer || actionType === 'new_dummy') {
+        try {
+          const proj = targetProject || 'cjbs';
+          const res = await axios.get(`${API_BASE}/api/dummy-integration/target-schema?project_name=${proj}`, {
+            headers: authHeaders(token),
+          });
+          tgtCols = res.data?.columns || [];
+        } catch (err) {
+          tgtCols = [];
+          showToast('Could not load the Target schema from the Dummy Server. Check that the Dummy Server is running.');
+        }
+      } else if (uploadTargetColumns.length) {
+        tgtCols = uploadTargetColumns;
+      }
     }
+
+    setSchemaSourceCols(srcCols);
     setSchemaTargetCols(tgtCols.length ? tgtCols : srcCols);
     setShowSchemaModal(true);
   };
 
-  const handleConfirmReconcileModal = async (srcKey, tgtKey, columnMap) => {
+  const handleConfirmReconcileModal = async (srcKey, tgtKey, columnMap, amtSrcCol, amtTgtCol) => {
     setShowSchemaModal(false);
     const chosenKey = srcKey || uploadKeyCol;
     setUploadKeyCol(chosenKey);
+
+    const updatedColumnMap = { ...(columnMap || {}) };
+    if (amtSrcCol) {
+      setCalcSourceCol(amtSrcCol);
+      updatedColumnMap.__amount_source_col__ = amtSrcCol;
+    }
+    if (amtTgtCol) {
+      setCalcTargetCol(amtTgtCol);
+      updatedColumnMap.__amount_target_col__ = amtTgtCol;
+    }
+
     if (pendingActionType === 'new_dummy') {
-      await autoReconcileWithKey(chosenKey, columnMap);
+      await autoReconcileWithKey(chosenKey, updatedColumnMap);
     } else if (pendingActionType === 'new_manual') {
-      await createSeriesWithKey(chosenKey, columnMap);
+      await createSeriesWithKey(chosenKey, updatedColumnMap);
     } else if (pendingActionType === 'add_version') {
-      await addVersionWithKey(chosenKey, columnMap);
+      await addVersionWithKey(chosenKey, updatedColumnMap);
+    }
+
+    if (uploadFile && (amtSrcCol || amtTgtCol)) {
+      calculateColumnSums(amtSrcCol || calcSourceCol, amtTgtCol || calcTargetCol);
     }
   };
 
@@ -1822,8 +1898,8 @@ function App() {
           {day_summary?.length ? (
             <div className="day-wise-viz">
               <DayWisePieChart segments={[
-                { label: 'Deleted', value: day_summary.reduce((sum, d) => sum + (d.missing_in_target || 0), 0), color: '#ef4444' },
-                { label: 'Added', value: day_summary.reduce((sum, d) => sum + (d.missing_in_source || 0), 0), color: '#22c55e' },
+                { label: 'Only in Source (Deleted)', value: day_summary.reduce((sum, d) => sum + (d.missing_in_target || 0), 0), color: '#ef4444' },
+                { label: 'Only in Target (Added)', value: day_summary.reduce((sum, d) => sum + (d.missing_in_source || 0), 0), color: '#22c55e' },
                 { label: 'Duplicates', value: day_summary.reduce((sum, d) => sum + (d.duplicates_source || 0) + (d.duplicates_target || 0), 0), color: '#f59e0b' },
                 { label: 'Value Changes', value: day_summary.reduce((sum, d) => sum + (d.mismatches || 0), 0), color: '#3b82f6' },
                 { label: 'Format Issues', value: day_summary.reduce((sum, d) => sum + (d.format_inconsistencies || 0), 0), color: '#a855f7' },
@@ -1836,22 +1912,50 @@ function App() {
           )}
         </section>
 
+        {report && renderDiscrepancies(report, beforeLabel, afterLabel)}
       </>
     );
   };
 
-  // ── Discrepancies detail (moved out of the home Reconcile view — now
-  // shown per-file under the Reports tab, since that's where a report's
-  // row-level detail belongs once it's been saved). ──────────────────────────
+  // ── Discrepancies detail ──────────────────────────────────────────────────
   const renderDiscrepancies = (report, beforeLabel, afterLabel) => (
-    <section className="content-card result-section">
-      <h2>Discrepancies</h2>
+    <section className="content-card result-section" style={{ marginTop: 20 }}>
+      <div className="top-row">
+        <h2>Discrepancies Breakdown</h2>
+      </div>
+      <p className="muted" style={{ margin: '-4px 0 16px 0', fontSize: '0.85rem' }}>
+        Detailed breakdown of matched, missing, and modified transactions between <strong>{beforeLabel}</strong> and <strong>{afterLabel}</strong>.
+      </p>
+
+      {/* Explanatory Cards for Only in Source & Only in Target */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 18 }}>
+        <div className="card" style={{ borderColor: 'rgba(239, 68, 68, 0.4)', background: 'rgba(239, 68, 68, 0.06)', padding: '16px 18px', borderRadius: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#ef4444', fontWeight: 700 }}>🔴 Only in Source ({report.missing_in_target?.count || 0})</h3>
+            <span className="pill" style={{ background: 'rgba(239, 68, 68, 0.18)', color: '#ef4444', fontSize: '0.72rem', fontWeight: 700 }}>Deleted / Missing</span>
+          </div>
+          <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--muted)', lineHeight: 1.45 }}>
+            A transaction exists in <strong>{beforeLabel}</strong> but was never recorded (or was deleted) in <strong>{afterLabel}</strong>.
+          </p>
+        </div>
+
+        <div className="card" style={{ borderColor: 'rgba(34, 197, 94, 0.4)', background: 'rgba(34, 197, 94, 0.06)', padding: '16px 18px', borderRadius: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#22c55e', fontWeight: 700 }}>🟢 Only in Target ({report.missing_in_source?.count || 0})</h3>
+            <span className="pill" style={{ background: 'rgba(34, 197, 94, 0.18)', color: '#22c55e', fontSize: '0.72rem', fontWeight: 700 }}>Added / New</span>
+          </div>
+          <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--muted)', lineHeight: 1.45 }}>
+            A transaction exists in <strong>{afterLabel}</strong> but was never recorded (or was added new) in <strong>{beforeLabel}</strong>.
+          </p>
+        </div>
+      </div>
+
       <details open><summary>All rows, side by side ({report.full_comparison?.count || 0})</summary>{renderFullComparison(report.full_comparison?.rows, beforeLabel, afterLabel)}</details>
-      <details><summary>Deleted — missing in {afterLabel} ({report.missing_in_target?.count || 0})</summary>{renderRows(report.missing_in_target?.rows, 'Deleted')}</details>
-      <details><summary>Added — new in {afterLabel} ({report.missing_in_source?.count || 0})</summary>{renderRows(report.missing_in_source?.rows, 'Added')}</details>
+      <details open><summary>🔴 Only in Source — missing from {afterLabel} ({report.missing_in_target?.count || 0})</summary>{renderRows(report.missing_in_target?.rows, 'Only in Source (Deleted)')}</details>
+      <details open><summary>🟢 Only in Target — missing from {beforeLabel} ({report.missing_in_source?.count || 0})</summary>{renderRows(report.missing_in_source?.rows, 'Only in Target (Added)')}</details>
+      <details><summary>Value changes ({report.mismatches?.count || 0})</summary>{renderIssueRows(report.mismatches?.rows, beforeLabel, afterLabel)}</details>
       <details><summary>{beforeLabel} duplicates ({report.duplicates_source?.count || 0})</summary>{renderRows(report.duplicates_source?.rows)}</details>
       <details><summary>{afterLabel} duplicates ({report.duplicates_target?.count || 0})</summary>{renderRows(report.duplicates_target?.rows)}</details>
-      <details><summary>Value changes ({report.mismatches?.count || 0})</summary>{renderIssueRows(report.mismatches?.rows, beforeLabel, afterLabel)}</details>
       <details><summary>Renamed — fuzzy-matched keys ({report.fuzzy_matches?.count || 0})</summary>{renderFuzzyRows(report.fuzzy_matches?.rows, beforeLabel, afterLabel)}</details>
       <details><summary>Format inconsistencies ({report.format_inconsistencies?.count || 0})</summary>{renderIssueRows(report.format_inconsistencies?.rows, beforeLabel, afterLabel)}</details>
     </section>
@@ -2328,7 +2432,7 @@ function App() {
                     )}
 
                     <div className="upload-row">
-                      <input ref={uploadInputRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={async (e) => { const f = e.target.files[0] || null; setUploadFile(f); fetchColumns(f); setArResult(null); setArError(''); if (f) { const det = await detectFileType(f); setSrcDetection(det); } else { setSrcDetection(null); } }} />
+                      <input ref={uploadInputRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={async (e) => { const f = e.target.files[0] || null; setUploadFile(f); fetchColumns(f); setArResult(null); setArError(''); setCalcResults(null); setCalcSourceCol(''); setCalcTargetCol(''); if (f) { const det = await detectFileType(f); setSrcDetection(det); } else { setSrcDetection(null); } }} />
                       <button type="button" className="file-input-label" onClick={() => uploadInputRef.current?.click()}>
                         {uploadFile ? `📄 ${uploadFile.name}` : (mode === 'new' ? 'Choose Baseline File' : 'Choose File to Compare')}
                       </button>
@@ -2445,6 +2549,8 @@ function App() {
                 {error && <div className="error-banner">{error}</div>}
               </section>
 
+
+
               {/* ── Version timeline (navigation) ─────────────────────────── */}
               {mode === 'series' && activeSeries && (
                 <section className="content-card">
@@ -2560,8 +2666,8 @@ function App() {
                   { key: 'summary', label: 'Summary' },
                   { key: 'matched', label: `Matched (${arResult.matched?.length ?? 0})` },
                   { key: 'disputed', label: `Disputed / Amount Mismatch (${arResult.disputed?.length ?? 0})` },
-                  { key: 'unmatched_src', label: `Unmatched Source (${arResult.unmatched_source?.length ?? 0})` },
-                  { key: 'unmatched_tgt', label: `Unmatched Target (${arResult.unmatched_target?.length ?? 0})` },
+                  { key: 'unmatched_src', label: `Only in Source (${arResult.unmatched_source?.length ?? 0})` },
+                  { key: 'unmatched_tgt', label: `Only in Target (${arResult.unmatched_target?.length ?? 0})` },
                   { key: 'tier2', label: `Tier-2 (${arResult.tier2_rows?.length ?? 0})` },
                   { key: 'dup_src', label: `Dup Keys Src (${arResult.duplicate_source_rows?.length ?? 0})` },
                   { key: 'dup_tgt', label: `Dup Keys Tgt (${arResult.duplicate_target_rows?.length ?? 0})` },
@@ -2619,8 +2725,8 @@ function App() {
                           {[
                             ['Matched Txns', s.matched ?? 0],
                             ['Amount Mismatch', s.amount_mismatch ?? 0],
-                            ['Only in Source', s.only_in_source ?? 0],
-                            ['Only in Target', s.only_in_target ?? 0],
+                            ['Only in Source (Deleted / Unmatched)', s.only_in_source ?? 0],
+                            ['Only in Target (Added / Unmatched)', s.only_in_target ?? 0],
                             ['Tier-2 Matches', s.tier2_matches ?? 0],
                             ['Src Exceptions', s.source_exceptions ?? 0],
                             ['Tgt Exceptions', s.target_exceptions ?? 0],
@@ -2633,8 +2739,28 @@ function App() {
                     )}
                     {arActiveTab === 'matched' && renderArTable(arResult.matched)}
                     {arActiveTab === 'disputed' && renderArTable(arResult.disputed)}
-                    {arActiveTab === 'unmatched_src' && renderArTable(arResult.unmatched_source)}
-                    {arActiveTab === 'unmatched_tgt' && renderArTable(arResult.unmatched_target)}
+                    {arActiveTab === 'unmatched_src' && (
+                      <div>
+                        <div className="card" style={{ borderColor: 'rgba(239, 68, 68, 0.4)', background: 'rgba(239, 68, 68, 0.06)', padding: '12px 16px', marginBottom: 14, borderRadius: 10 }}>
+                          <h3 style={{ margin: 0, fontSize: '0.88rem', color: '#ef4444', fontWeight: 700 }}>🔴 Only in Source — Missing in Target</h3>
+                          <p style={{ margin: '4px 0 0', fontSize: '0.78rem', color: 'var(--muted)' }}>
+                            A transaction exists in the Source system but was never recorded (or was deleted) in the Target system.
+                          </p>
+                        </div>
+                        {renderArTable(arResult.unmatched_source)}
+                      </div>
+                    )}
+                    {arActiveTab === 'unmatched_tgt' && (
+                      <div>
+                        <div className="card" style={{ borderColor: 'rgba(34, 197, 94, 0.4)', background: 'rgba(34, 197, 94, 0.06)', padding: '12px 16px', marginBottom: 14, borderRadius: 10 }}>
+                          <h3 style={{ margin: 0, fontSize: '0.88rem', color: '#22c55e', fontWeight: 700 }}>🟢 Only in Target — Missing in Source</h3>
+                          <p style={{ margin: '4px 0 0', fontSize: '0.78rem', color: 'var(--muted)' }}>
+                            A transaction exists in the Target system but was never recorded (or was added new) in the Source system.
+                          </p>
+                        </div>
+                        {renderArTable(arResult.unmatched_target)}
+                      </div>
+                    )}
                     {arActiveTab === 'tier2' && renderArTable(arResult.tier2_rows)}
                     {arActiveTab === 'dup_src' && renderArTable(arResult.duplicate_source_rows)}
                     {arActiveTab === 'dup_tgt' && renderArTable(arResult.duplicate_target_rows)}

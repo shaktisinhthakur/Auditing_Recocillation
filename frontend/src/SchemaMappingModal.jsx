@@ -13,6 +13,8 @@ const SchemaMappingModal = ({
   const [sourceKey, setSourceKey] = useState('');
   const [targetKey, setTargetKey] = useState('');
   const [columnMap, setColumnMap] = useState({}); // { [sourceCol]: targetCol }
+  const [amountSourceCol, setAmountSourceCol] = useState('');
+  const [amountTargetCol, setAmountTargetCol] = useState('');
 
   // Initialize key selections and column mapping dropdowns
   useEffect(() => {
@@ -36,6 +38,26 @@ const SchemaMappingModal = ({
         return lower.includes('number') || lower.includes('id') || lower.includes('key') || lower.includes('code');
       }) || targetColumns[0] || '';
       if (defaultTgtKey) setTargetKey(defaultTgtKey);
+    }
+
+    // Auto-detect default source amount column
+    let defaultSrcAmt = amountSourceCol;
+    if (!defaultSrcAmt || !sourceColumns.includes(defaultSrcAmt)) {
+      defaultSrcAmt = sourceColumns.find((col) => {
+        const lower = col.toLowerCase();
+        return lower.includes('amount') || lower.includes('amt') || lower.includes('total') || lower.includes('price') || lower.includes('val') || lower.includes('balance') || lower.includes('cost');
+      }) || '';
+      setAmountSourceCol(defaultSrcAmt);
+    }
+
+    // Auto-detect default target amount column
+    let defaultTgtAmt = amountTargetCol;
+    if (targetColumns.length > 0 && (!defaultTgtAmt || !targetColumns.includes(defaultTgtAmt))) {
+      defaultTgtAmt = targetColumns.find((col) => {
+        const lower = col.toLowerCase();
+        return lower.includes('amount') || lower.includes('amt') || lower.includes('total') || lower.includes('price') || lower.includes('val') || lower.includes('balance') || lower.includes('cost');
+      }) || '';
+      setAmountTargetCol(defaultTgtAmt);
     }
 
     // Auto-map source columns to actual target columns
@@ -143,7 +165,7 @@ const SchemaMappingModal = ({
       alert('Please select a Source Key Column.');
       return;
     }
-    onConfirmReconcile(sourceKey, targetKey || sourceKey, columnMap);
+    onConfirmReconcile(sourceKey, targetKey || sourceKey, columnMap, amountSourceCol, amountTargetCol);
   };
 
   return (
@@ -201,8 +223,8 @@ const SchemaMappingModal = ({
           </button>
         </div>
 
-        {/* ── Source & Target Key Selectors Bar ──────────────────────────────── */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16, background: 'rgba(0,0,0,0.22)', padding: 14, borderRadius: 12, border: '1px solid var(--card-border)', flexShrink: 0 }}>
+        {/* ── Source & Target Key & Amount Selectors Bar ──────────────────────── */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16, background: 'rgba(0,0,0,0.22)', padding: 14, borderRadius: 12, border: '1px solid var(--card-border)', flexShrink: 0 }}>
           <div>
             <label style={{ display: 'block', fontWeight: 600, fontSize: '0.86rem', marginBottom: 6, color: 'var(--text)' }}>
               🔑 Source Key Column (Source File) <span style={{ color: '#ef4444' }}>*</span>
@@ -233,6 +255,44 @@ const SchemaMappingModal = ({
               style={{ width: '100%', fontSize: '0.9rem', padding: '8px 12px' }}
             >
               {!targetColumns.length && <option value="">Loading columns…</option>}
+              {targetColumns.map((col) => (
+                <option key={col} value={col}>
+                  {col}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontWeight: 600, fontSize: '0.86rem', marginBottom: 6, color: 'var(--primary)' }}>
+              💵 Source Amount Column (Transaction Calc)
+            </label>
+            <select
+              className="search-input"
+              value={amountSourceCol}
+              onChange={(e) => setAmountSourceCol(e.target.value)}
+              style={{ width: '100%', fontSize: '0.9rem', padding: '8px 12px' }}
+            >
+              <option value="">— Select amount column —</option>
+              {sourceColumns.map((col) => (
+                <option key={col} value={col}>
+                  {col}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontWeight: 600, fontSize: '0.86rem', marginBottom: 6, color: 'var(--accent)' }}>
+              💵 Target Amount Column (Transaction Calc)
+            </label>
+            <select
+              className="search-input"
+              value={amountTargetCol}
+              onChange={(e) => setAmountTargetCol(e.target.value)}
+              style={{ width: '100%', fontSize: '0.9rem', padding: '8px 12px' }}
+            >
+              <option value="">— Select amount column —</option>
               {targetColumns.map((col) => (
                 <option key={col} value={col}>
                   {col}
